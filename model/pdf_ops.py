@@ -52,21 +52,55 @@ def merge_pdfs(inputs: List[str], output: str) -> None:
     with open(output, "wb") as fp:
         writer.write(fp)
 
-def split_pdf(input_pdf: str, ranges: str, out_dir: str) -> List[str]:
+def split_pdf(input_pdf: str, ranges: str, out_dir: str, merge_output: bool = False, output_filename: str = "split_merged.pdf") -> List[str]:
     _require(PdfReader is not None and PdfWriter is not None, "pypdf no instalado")
     os.makedirs(out_dir, exist_ok=True)
     reader = PdfReader(input_pdf)
     pages = split_ranges(ranges, len(reader.pages))
     _require(bool(pages), "Los rangos no seleccionaron ninguna página")
     outputs = []
-    for p in pages:
+    
+    if merge_output:
         writer = PdfWriter()
-        writer.add_page(reader.pages[p])
-        out = os.path.join(out_dir, f"page_{p+1:04d}.pdf")
+        for p in pages:
+            writer.add_page(reader.pages[p])
+        out = os.path.join(out_dir, output_filename)
         with open(out, "wb") as fp:
             writer.write(fp)
         outputs.append(out)
+    else:
+        for p in pages:
+            writer = PdfWriter()
+            writer.add_page(reader.pages[p])
+            out = os.path.join(out_dir, f"page_{p+1:04d}.pdf")
+            with open(out, "wb") as fp:
+                writer.write(fp)
+            outputs.append(out)
     return outputs
+
+def rotate_pdf(input_pdf: str, output_pdf: str, angle: int) -> None:
+    _require(PdfReader is not None and PdfWriter is not None, "pypdf no instalado")
+    reader = PdfReader(input_pdf)
+    writer = PdfWriter()
+    for page in reader.pages:
+        page.rotate(angle)
+        writer.add_page(page)
+    with open(output_pdf, "wb") as fp:
+        writer.write(fp)
+
+def remove_password(input_pdf: str, output_pdf: str, password: str) -> bool:
+    _require(PdfReader is not None and PdfWriter is not None, "pypdf no instalado")
+    reader = PdfReader(input_pdf)
+    if reader.is_encrypted:
+        success = reader.decrypt(password)
+        if not success:
+            return False
+    writer = PdfWriter()
+    for page in reader.pages:
+        writer.add_page(page)
+    with open(output_pdf, "wb") as fp:
+        writer.write(fp)
+    return True
 
 def compress_pdf_lossless(input_pdf: str, output_pdf: str):
     _require(fitz is not None, "PyMuPDF no instalado")

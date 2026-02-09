@@ -1,120 +1,84 @@
 # -*- coding: utf-8 -*-
 import tkinter as tk
-from tkinter import ttk
+import customtkinter as ctk
+from tkinter import filedialog
 
-# Drag & Drop root
+# Drag & Drop support
 SUPPORTS_DND = False
 try:
-    from tkinterdnd2 import DND_FILES, TkinterDnD  # pip install tkinterdnd2
-    DND_ROOT = TkinterDnD.Tk
+    from tkinterdnd2 import DND_FILES, TkinterDnD
+    # Para usar DnD con CustomTkinter, se suele requerir una clase base mixta o inicialización específica.
+    # Aquí asumimos que la raíz (main_view) manejará la inicialización de DnD.
     SUPPORTS_DND = True
 except Exception:
     DND_FILES = None
-    DND_ROOT = tk.Tk  # fallback
 
-def _rounded_rect(canvas, x1, y1, x2, y2, r=16, **kwargs):
-    pts = [
-        x1+r, y1, x2-r, y1, x2, y1, x2, y1+r, x2, y2-r, x2, y2,
-        x2-r, y2, x1+r, y2, x1, y2, x1, y2-r, x1, y1+r, x1, y1,
-    ]
-    return canvas.create_polygon(pts, smooth=True, **kwargs)
-
-class GlassCard(ttk.Frame):
-    """Panel con fondo 'glass' redondeado."""
-    def __init__(self, master, title: str = ""):
+class GlassCard(ctk.CTkFrame):
+    """Contenedor con estilo moderno y bordes redondeados."""
+    def __init__(self, master, title: str = "", **kwargs):
+        super().__init__(master, corner_radius=15, border_width=1, border_color=("gray80", "#334155"), **kwargs)
         
-        super().__init__(master)
-        self.canvas = tk.Canvas(self, highlightthickness=0, bd=0, bg=self._bg(master))
-        self.canvas.pack(fill=tk.BOTH, expand=True)
-        self.inner = ttk.Frame(self, padding=16)
-        self.inner.pack(fill=tk.BOTH, expand=True)
-        self.title = title
-        self.bind("<Configure>", self._redraw)
-        self.canvas.bind("<Configure>", self._redraw)
+        if title:
+            self.lbl_title = ctk.CTkLabel(
+                self, 
+                text=title, 
+                font=("Segoe UI", 16, "bold"), 
+                anchor="w"
+            )
+            self.lbl_title.pack(fill="x", padx=20, pady=(15, 5))
+            
+        self.inner = ctk.CTkFrame(self, fg_color="transparent")
+        self.inner.pack(fill="both", expand=True, padx=15, pady=(5, 15))
 
-    def _bg(self, w):
-        try:
-            return w.winfo_toplevel().cget("bg")
-        except Exception:
-            return "#0b1220"
-
-    def _redraw(self, _evt=None):
-        self.after(5, self._draw)
-
-    def _draw(self):
-        self.canvas.delete("all")
-        w = max(100, self.winfo_width()); h = max(60, self.winfo_height())
-        pad = 6
-        # Sombra
-        _rounded_rect(self.canvas, pad, pad+2, w-pad, h-pad+2, r=22, fill="#000000", stipple="gray25", outline="")
-        # Capa
-        _rounded_rect(self.canvas, pad, pad, w-pad, h-pad, r=22, fill="#101827", outline="#334155")
-        # Contenido
-        self.canvas.create_window(0, 0, anchor="nw", window=self.inner, width=w, height=h)
-        if self.title:
-            self.canvas.create_text(22, 18, anchor="w", text=self.title, fill="#e5e7eb", font=("Segoe UI", 12, "bold"))
-
-class DropArea(ttk.Frame):
-    """Área de arrastrar y soltar con borde marcado."""
+class DropArea(ctk.CTkFrame):
+    """Área de arrastrar y soltar moderna."""
     def __init__(self, master, title: str, on_files, multiple=True):
-        super().__init__(master, padding=6)
+        super().__init__(
+            master, 
+            corner_radius=10, 
+            border_width=2, 
+            border_color=("gray70", "gray30"),
+            fg_color=("gray95", "#1e293b") # Color sutilmente diferente al fondo
+        )
         self.on_files = on_files
         self.multiple = multiple
 
-        # Lienzo con borde discontinuo
-        self.canvas = tk.Canvas(self, height=120, highlightthickness=0, bd=0)
-        self.canvas.pack(fill=tk.X, expand=True)
-        self._draw(normal=True)
+        self.lbl = ctk.CTkLabel(self, text=title, text_color=("gray50", "gray70"))
+        self.lbl.pack(pady=(15, 5))
 
-        # Texto y botón
-        self.label = ttk.Label(self, text=title, style="Caption.TLabel")
-        self.label.pack(anchor="w", pady=(8, 4))
-        self.btn = ttk.Button(self, text="Elegir archivos", style="Accent.TButton", command=self._open_dialog)
-        self.btn.pack(anchor="w")
-
-        # Efecto hover
-        self.canvas.bind("<Enter>", lambda e: self._draw(normal=False))
-        self.canvas.bind("<Leave>", lambda e: self._draw(normal=True))
-
-        # DnD
-        top = master.winfo_toplevel()
-        if SUPPORTS_DND and hasattr(top, "drop_target_register") and DND_FILES is not None:
-            self.drop_target_register(DND_FILES)
-            self.dnd_bind("<<Drop>>", self._on_drop)
-            ttk.Label(self, text="Drag & Drop activo", style="Hint.TLabel").pack(anchor="w", pady=(6,0))
-        else:
-            ttk.Label(self, text="Drag & Drop no disponible (instala tkinterdnd2)", style="Hint.TLabel").pack(anchor="w", pady=(6,0))
-
-    def _fg(self):
-        return "#3b82f6"
-
-    def _draw(self, normal=True):
-        self.canvas.delete("all")
-        w = max(200, self.canvas.winfo_width() or 600)
-        h = max(100, self.canvas.winfo_height() or 120)
-        pad = 4
-        fill = "#0f172a" if normal else "#111b2e"
-        outline = self._fg()
-        # Tarjeta
-        _rounded_rect(self.canvas, pad, pad, w-pad, h-pad, r=18, fill=fill, outline=outline)
-        # Borde discontínuo interior
-        dash = (8, 6)
-        self.canvas.create_rectangle(
-            pad+6, pad+6, w-pad-6, h-pad-6,
-            outline=outline, width=2, dash=dash
+        self.btn = ctk.CTkButton(
+            self, 
+            text="Elegir archivos", 
+            command=self._open_dialog,
+            height=32
         )
-        self.canvas.create_text(w/2, h/2, text="Suelta aquí los archivos", fill="#e5e7eb")
+        self.btn.pack(pady=(0, 15))
+
+        # Configurar Drag & Drop
+        if SUPPORTS_DND:
+            # Intentamos registrar el frame para DnD
+            # Nota: Esto puede fallar si 'master' no es una ventana TkinterDnD válida,
+            # pero lo intentamos de forma segura.
+            try:
+                self.drop_target_register(DND_FILES)
+                self.dnd_bind("<<Drop>>", self._on_drop)
+                self.lbl.configure(text=f"{title}\n(Drag & Drop disponible)")
+            except Exception:
+                pass
 
     def _open_dialog(self):
         if self.multiple:
-            files = tk.filedialog.askopenfilenames(title="Selecciona archivo(s)")
+            files = filedialog.askopenfilenames(title="Selecciona archivo(s)")
             if files: self.on_files(list(files))
         else:
-            f = tk.filedialog.askopenfilename(title="Selecciona archivo")
+            f = filedialog.askopenfilename(title="Selecciona archivo")
             if f: self.on_files([f])
 
     def _on_drop(self, event):
         data = event.data
+        if not data: return
+        
+        # Parseo simple de rutas de tkinterdnd2 (maneja {} para rutas con espacios)
         paths, curr, in_brace = [], "", False
         for ch in data:
             if ch == "{":
@@ -127,6 +91,9 @@ class DropArea(ttk.Frame):
             else:
                 curr += ch
         if curr: paths.append(curr)
+
         if not self.multiple and paths:
             paths = [paths[0]]
-        self.on_files(paths)
+            
+        if paths:
+            self.on_files(paths)

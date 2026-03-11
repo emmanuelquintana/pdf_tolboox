@@ -237,12 +237,16 @@ class PDFToolboxApp(BaseClass):
         )
         listbox.pack(fill="both", expand=True, pady=(0, 10))
 
+        lbl_count = ctk.CTkLabel(card.inner, text="0 archivos seleccionados", font=ctk.CTkFont(size=12, slant="italic"))
+        lbl_count.pack(anchor="e", pady=(0, 5))
+
         files_state = []
 
         def update_list():
             listbox.delete(0, tk.END)
             for f in files_state:
                 listbox.insert(tk.END, os.path.basename(f))
+            lbl_count.configure(text=f"{len(files_state)} archivos seleccionados")
 
         def on_drop(files):
             pdfs = [f for f in files if f.lower().endswith(".pdf")]

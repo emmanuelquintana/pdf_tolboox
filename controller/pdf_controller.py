@@ -8,25 +8,37 @@ APP_NAME = "PDF Toolbox"
 
 class PDFController:
     """Orquesta llamadas del UI hacia el modelo y maneja diálogos."""
-    def __init__(self, logger=None, error_handler=None, on_success_action=None):
+    def __init__(self, logger=None, error_handler=None, on_success_action=None, progress_handler=None):
         self.log = logger or (lambda msg: None)
         self.error_handler = error_handler or (lambda title, msg: print(f"{title}: {msg}"))
         self.on_success_action = on_success_action or (lambda path: None)
+        self.progress_handler = progress_handler or (lambda val, txt: None)
 
     def _run_async(self, target, *args, success_msg=None, callback=None):
         def wrapper():
+            self.progress_handler(0.1, "Procesando...")
             try:
-                result = target(*args)
+                # Si el target acepta progress_callback, lo inyectamos
+                import inspect
+                sig = inspect.signature(target)
+                if "progress_callback" in sig.parameters:
+                    # Inyectar wrapper que actualiza UI
+                    actual_args = list(args) + [self.progress_handler]
+                    result = target(*actual_args)
+                else:
+                    result = target(*args)
+
                 if success_msg:
-                    # Si el mensaje depende del resultado (ej. ruta de salida)
                     msg = success_msg
                     if "{}" in msg or "{out}" in msg:
                         msg = msg.format(out=result)
                     self.log(msg)
                 
+                self.progress_handler(1.0, "¡Listo!")
                 if callback:
                     callback()
             except Exception as e:
+                self.progress_handler(0, "Error")
                 self.error_handler("Error", str(e))
         
         t = threading.Thread(target=wrapper, daemon=True)
@@ -154,6 +166,28 @@ class PDFController:
             callback=lambda: self.on_success_action(out)
         )
 
+    def encrypt_pdf(self, src_path, password):
+        if not src_path or not os.path.isfile(src_path):
+            self.error_handler(APP_NAME, "Selecciona un PDF válido")
+            return
+        if not password:
+            self.error_handler(APP_NAME, "Ingresa una contraseña")
+            return
+        out = filedialog.asksaveasfilename(
+            defaultextension=".pdf",
+            filetypes=[("PDF", "*.pdf")],
+            title="Guardar PDF Protegido"
+        )
+        if not out:
+            return
+
+        self.log("Protegiendo PDF...")
+        self._run_async(
+            ops.encrypt_pdf, src_path, out, password, 
+            success_msg=f"PDF Protegido → {out}",
+            callback=lambda: self.on_success_action(out)
+        )
+
     # ---------- Quitar Contraseña ----------
     def remove_password(self, src_path, password):
         if not src_path or not os.path.isfile(src_path):
@@ -176,3 +210,32 @@ class PDFController:
                 self.error_handler(APP_NAME, "Contraseña incorrecta o error al desencriptar")
 
         threading.Thread(target=task, daemon=True).start()
+
+    # ---------- Metadatos ----------
+    def get_metadata(self, src_path):
+        if not src_path or not os.path.isfile(src_path):
+            return {}
+        try:
+            return ops.get_pdf_metadata(src_path)
+        except Exception as e:
+            self.error_handler("Error", f"No se pudieron leer los metadatos: {e}")
+            return {}
+
+    def save_metadata(self, src_path, metadata):
+        if not src_path or not os.path.isfile(src_path):
+            self.error_handler(APP_NAME, "Selecciona un PDF válido")
+            return
+        out = filedialog.asksaveasfilename(
+            defaultextension=".pdf",
+            filetypes=[("PDF", "*.pdf")],
+            title="Guardar PDF con Metadatos"
+        )
+        if not out:
+            return
+
+        self.log("Guardando metadatos...")
+        self._run_async(
+            ops.set_pdf_metadata, src_path, out, metadata, 
+            success_msg=f"Metadatos actualizados → {out}",
+            callback=lambda: self.on_success_action(out)
+        )

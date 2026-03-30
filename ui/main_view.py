@@ -50,6 +50,7 @@ class PDFToolboxApp(BaseClass):
         self.controller.log = self.log_message
         self.controller.error_handler = self.show_error
         self.controller.on_success_action = self.show_success_modal
+        self.controller.progress_handler = self.set_progress
 
         # Vista inicial
         self._show_view("MERGE")
@@ -107,7 +108,8 @@ class PDFToolboxApp(BaseClass):
             ("Comprimir", "COMPRESS"),
             ("Convertir", "CONVERT"),
             ("Rotar PDF", "ROTATE"),
-            ("Seguridad", "PASSWORD")
+            ("Seguridad", "PASSWORD"),
+            ("Metadatos", "METADATA")
         ]
 
         for i, (text, key) in enumerate(btn_config, start=1):
@@ -133,6 +135,17 @@ class PDFToolboxApp(BaseClass):
         )
         self.theme_switch.select() # Por defecto Dark
         self.theme_switch.grid(row=9, column=0, padx=20, pady=20, sticky="s")
+
+        # Barra de progreso
+        self.progress_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        self.progress_frame.grid(row=10, column=0, padx=10, pady=(0, 20), sticky="ew")
+        
+        self.progress_bar = ctk.CTkProgressBar(self.progress_frame, height=10)
+        self.progress_bar.set(0)
+        self.progress_bar.pack(fill="x", padx=10)
+        
+        self.progress_lbl = ctk.CTkLabel(self.progress_frame, text="", font=ctk.CTkFont(size=10))
+        self.progress_lbl.pack(pady=2)
 
     def _build_content_area(self):
         self.content = ctk.CTkFrame(self, corner_radius=0, fg_color="transparent")
@@ -168,6 +181,10 @@ class PDFToolboxApp(BaseClass):
         # Password
         self.views["PASSWORD"] = self._create_view_frame()
         self._build_password_view(self.views["PASSWORD"])
+
+        # Metadata
+        self.views["METADATA"] = self._create_view_frame()
+        self._build_metadata_view(self.views["METADATA"])
 
     def _create_view_frame(self):
         f = ctk.CTkFrame(self.content, fg_color="transparent")
@@ -216,6 +233,18 @@ class PDFToolboxApp(BaseClass):
     def _hide_toast(self):
         self.toast_frame.place_forget()
 
+    def set_progress(self, val, text=""):
+        # val: 0.0 to 1.0
+        self.after(0, lambda: self._update_progress_ui(val, text))
+
+    def _update_progress_ui(self, val, text):
+        self.progress_bar.set(val)
+        self.progress_lbl.configure(text=text)
+        if val >= 1.0 or val <= 0:
+            self.progress_bar.configure(progress_color=["#3b82f6", "#1d4ed8"]) # Reset color
+        else:
+            self.progress_bar.configure(progress_color="#10b981") # Active color
+
     def _toggle_theme(self):
         mode = "Dark" if self.theme_switch.get() == "Dark" else "Light"
         ctk.set_appearance_mode(mode)
@@ -227,26 +256,58 @@ class PDFToolboxApp(BaseClass):
         card = GlassCard(parent, "Unir PDFs")
         card.pack(fill="both", expand=True)
 
+        # Contenedor para lista y controles de orden
+        list_container = ctk.CTkFrame(card.inner, fg_color="transparent")
+        list_container.pack(fill="both", expand=True, pady=(0, 10))
+
         listbox = tk.Listbox(
-            card.inner, 
+            list_container, 
             bg="#2b2b2b", 
             fg="white", 
             selectbackground="#3b82f6", 
             relief="flat",
-            highlightthickness=0
+            highlightthickness=0,
+            font=("Segoe UI", 10)
         )
-        listbox.pack(fill="both", expand=True, pady=(0, 10))
+        listbox.pack(side="left", fill="both", expand=True)
 
-        lbl_count = ctk.CTkLabel(card.inner, text="0 archivos seleccionados", font=ctk.CTkFont(size=12, slant="italic"))
-        lbl_count.pack(anchor="e", pady=(0, 5))
+        # Botones de orden laterales
+        order_frame = ctk.CTkFrame(list_container, fg_color="transparent", width=40)
+        order_frame.pack(side="left", padx=(10, 0), fill="y")
 
         files_state = []
 
         def update_list():
+            curr_sel = listbox.curselection()
             listbox.delete(0, tk.END)
             for f in files_state:
                 listbox.insert(tk.END, os.path.basename(f))
             lbl_count.configure(text=f"{len(files_state)} archivos seleccionados")
+            if curr_sel:
+                try: listbox.selection_set(curr_sel[0])
+                except: pass
+
+        def move_up():
+            sel = listbox.curselection()
+            if not sel or sel[0] == 0: return
+            idx = sel[0]
+            files_state[idx], files_state[idx-1] = files_state[idx-1], files_state[idx]
+            update_list()
+            listbox.selection_set(idx-1)
+
+        def move_down():
+            sel = listbox.curselection()
+            if not sel or sel[0] == len(files_state) - 1: return
+            idx = sel[0]
+            files_state[idx], files_state[idx+1] = files_state[idx+1], files_state[idx]
+            update_list()
+            listbox.selection_set(idx+1)
+
+        ctk.CTkButton(order_frame, text="▲", width=30, command=move_up).pack(pady=5)
+        ctk.CTkButton(order_frame, text="▼", width=30, command=move_down).pack(pady=5)
+
+        lbl_count = ctk.CTkLabel(card.inner, text="0 archivos seleccionados", font=ctk.CTkFont(size=12, slant="italic"))
+        lbl_count.pack(anchor="e", pady=(0, 5))
 
         def on_drop(files):
             pdfs = [f for f in files if f.lower().endswith(".pdf")]
@@ -260,9 +321,11 @@ class PDFToolboxApp(BaseClass):
         btn_row.pack(fill="x")
 
         def run_merge():
+            if not files_state: return
             self.controller.merge_pdfs(list(files_state))
-            files_state.clear()
-            update_list()
+            # No limpiamos automáticamente si el usuario quiere hacer otra acción con los mismos
+            # o si falló. Pero usualmente en esta app se limpia tras éxito.
+            # El controller actual pide el path, así que esperaremos al callback si quisiéramos limpiar.
         
         def clear():
             files_state.clear()
@@ -405,25 +468,90 @@ class PDFToolboxApp(BaseClass):
         ).pack(anchor="w", pady=20)
 
 
-    # ---------- PASSWORD ----------
+    # ---------- SECURITY (PASSWORD) ----------
     def _build_password_view(self, parent):
-        card = GlassCard(parent, "Remover Contraseña")
-        card.pack(fill="both", expand=True)
+        tab = ctk.CTkTabview(parent)
+        tab.pack(fill="both", expand=True)
+        tab.add("Proteger PDF")
+        tab.add("Desbloquear PDF")
 
+        # --- Proteger ---
+        lock_p = tab.tab("Proteger PDF")
+        self.lock_file = tk.StringVar()
+        self.lock_pass = tk.StringVar()
+
+        DropArea(lock_p, "Arrastra PDF para Proteger", lambda f: self.lock_file.set(f[0] if f else ""), multiple=False).pack(fill="x", pady=10)
+        ctk.CTkEntry(lock_p, textvariable=self.lock_file, placeholder_text="Archivo...").pack(fill="x", pady=5)
+        
+        ctk.CTkLabel(lock_p, text="Nueva Contraseña:").pack(anchor="w", pady=(10, 0))
+        ctk.CTkEntry(lock_p, textvariable=self.lock_pass, show="*").pack(fill="x", pady=(5, 15))
+        
+        ctk.CTkButton(
+            lock_p, 
+            text="Cifrar y Guardar", 
+            command=lambda: self.controller.encrypt_pdf(self.lock_file.get(), self.lock_pass.get())
+        ).pack(anchor="w")
+
+        # --- Desbloquear ---
+        unlock_p = tab.tab("Desbloquear PDF")
         self.pass_file = tk.StringVar()
         self.pass_txt = tk.StringVar()
 
-        DropArea(card.inner, "Arrastra PDF Protegido", lambda f: self.pass_file.set(f[0] if f else ""), multiple=False).pack(fill="x", pady=10)
-        ctk.CTkEntry(card.inner, textvariable=self.pass_file, placeholder_text="Archivo...").pack(fill="x", pady=5)
+        DropArea(unlock_p, "Arrastra PDF Protegido", lambda f: self.pass_file.set(f[0] if f else ""), multiple=False).pack(fill="x", pady=10)
+        ctk.CTkEntry(unlock_p, textvariable=self.pass_file, placeholder_text="Archivo...").pack(fill="x", pady=5)
 
-        ctk.CTkLabel(card.inner, text="Contraseña:").pack(anchor="w", pady=(10, 0))
-        ctk.CTkEntry(card.inner, textvariable=self.pass_txt, show="*").pack(fill="x", pady=(5, 15))
+        ctk.CTkLabel(unlock_p, text="Contraseña Actual:").pack(anchor="w", pady=(10, 0))
+        ctk.CTkEntry(unlock_p, textvariable=self.pass_txt, show="*").pack(fill="x", pady=(5, 15))
 
         ctk.CTkButton(
-            card.inner, 
+            unlock_p, 
             text="Desbloquear PDF", 
             command=lambda: self.controller.remove_password(self.pass_file.get(), self.pass_txt.get())
         ).pack(anchor="w")
+
+    # ---------- METADATA ----------
+    def _build_metadata_view(self, parent):
+        card = GlassCard(parent, "Editor de Metadatos")
+        card.pack(fill="both", expand=True)
+
+        self.meta_file = tk.StringVar()
+        self.meta_vars = {
+            "title": tk.StringVar(),
+            "author": tk.StringVar(),
+            "subject": tk.StringVar(),
+            "keywords": tk.StringVar(),
+            "creator": tk.StringVar()
+        }
+
+        def load_meta(files):
+            if not files: return
+            path = files[0]
+            self.meta_file.set(path)
+            data = self.controller.get_metadata(path)
+            for k, v in self.meta_vars.items():
+                v.set(data.get(k, ""))
+            self.log("Metadatos cargados")
+
+        DropArea(card.inner, "Arrastra PDF para editar info", load_meta, multiple=False).pack(fill="x", pady=10)
+        ctk.CTkEntry(card.inner, textvariable=self.meta_file, placeholder_text="Ruta del archivo...").pack(fill="x", pady=(0, 10))
+
+        # Grid para campos
+        fields_frame = ctk.CTkFrame(card.inner, fg_color="transparent")
+        fields_frame.pack(fill="x", pady=10)
+        fields_frame.grid_columnconfigure(1, weight=1)
+
+        labels = ["Título:", "Autor:", "Asunto:", "Keywords:", "Creador:"]
+        keys = ["title", "author", "subject", "keywords", "creator"]
+
+        for i, (lbl_txt, key) in enumerate(zip(labels, keys)):
+            ctk.CTkLabel(fields_frame, text=lbl_txt).grid(row=i, column=0, padx=(0, 10), pady=5, sticky="e")
+            ctk.CTkEntry(fields_frame, textvariable=self.meta_vars[key]).grid(row=i, column=1, pady=5, sticky="ew")
+
+        def save_meta():
+            meta = {k: v.get() for k, v in self.meta_vars.items()}
+            self.controller.save_metadata(self.meta_file.get(), meta)
+
+        ctk.CTkButton(card.inner, text="Guardar Cambios", command=save_meta).pack(anchor="w", pady=20)
 
 if __name__ == "__main__":
     # Test run

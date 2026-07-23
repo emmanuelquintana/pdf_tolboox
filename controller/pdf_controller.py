@@ -80,6 +80,40 @@ class PDFController:
             callback=lambda: self.on_success_action(out_dir)
         )
         
+    # ---------- Organizar páginas ----------
+    def get_pdf_page_count(self, src_path):
+        if not src_path or not os.path.isfile(src_path):
+            self.error_handler(APP_NAME, "Selecciona un PDF válido")
+            return 0
+        try:
+            return ops.get_pdf_page_count(src_path)
+        except Exception as e:
+            self.error_handler("Error", f"No se pudo leer el PDF: {e}")
+            return 0
+
+    def render_pdf_page_thumbnail(self, src_path, page_index, max_width=128, max_height=166):
+        return ops.render_pdf_page_thumbnail(src_path, page_index, max_width, max_height)
+
+    def organize_pdf_pages(self, page_refs):
+        if not page_refs:
+            self.error_handler(APP_NAME, "Agrega páginas antes de guardar")
+            return
+
+        out = filedialog.asksaveasfilename(
+            defaultextension=".pdf",
+            filetypes=[("PDF", "*.pdf")],
+            title="Guardar PDF organizado"
+        )
+        if not out:
+            return
+
+        self.log("Organizando páginas sin recompresión...")
+        self._run_async(
+            ops.organize_pdf_pages, page_refs, out,
+            success_msg=f"PDF organizado → {out}",
+            callback=lambda: self.on_success_action(out)
+        )
+
 
     # ---------- Comprimir ----------
     def compress_pdf(self, src_path, method="lossless", dpi=150):
@@ -127,22 +161,38 @@ class PDFController:
         )
 
     # ---------- Imágenes → PDF ----------
-    def images_to_pdf(self, paths):
+    def images_to_pdf(self, paths, page_size="A4", orientation="portrait", margin="none", merge_output=True):
         if not paths:
             self.error_handler(APP_NAME, "Agrega imágenes primero")
             return
-        out = filedialog.asksaveasfilename(
-            defaultextension=".pdf",
-            filetypes=[("PDF", "*.pdf")],
-            title="Guardar PDF"
-        )
-        if not out:
+
+        valid_paths = [
+            p for p in paths
+            if os.path.isfile(p) and p.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"))
+        ]
+        if not valid_paths:
+            self.error_handler(APP_NAME, "Agrega imágenes válidas")
             return
+
+        if merge_output:
+            out = filedialog.asksaveasfilename(
+                defaultextension=".pdf",
+                filetypes=[("PDF", "*.pdf")],
+                title="Guardar PDF"
+            )
+            if not out:
+                return
+            success_msg = f"PDF Creado → {out}"
+        else:
+            out = filedialog.askdirectory(title="Elige carpeta de salida")
+            if not out:
+                return
+            success_msg = f"PDFs creados en {out}"
         
         self.log("Creando PDF de imágenes...")
         self._run_async(
-            ops.images_to_pdf, paths, out, 
-            success_msg=f"PDF Creado → {out}",
+            ops.images_to_pdf, valid_paths, out, page_size, orientation, margin, merge_output,
+            success_msg=success_msg,
             callback=lambda: self.on_success_action(out)
         )
 

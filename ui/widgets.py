@@ -13,6 +13,32 @@ try:
 except Exception:
     DND_FILES = None
 
+def parse_dnd_files(data, multiple=True):
+    if not data:
+        return []
+
+    paths, curr, in_brace = [], "", False
+    for ch in data:
+        if ch == "{":
+            in_brace, curr = True, ""
+        elif ch == "}":
+            in_brace = False
+            if curr:
+                paths.append(curr)
+                curr = ""
+        elif ch == " " and not in_brace:
+            if curr:
+                paths.append(curr)
+                curr = ""
+        else:
+            curr += ch
+    if curr:
+        paths.append(curr)
+
+    if not multiple and paths:
+        return [paths[0]]
+    return paths
+
 class GlassCard(ctk.CTkFrame):
     """Contenedor con estilo moderno y bordes redondeados."""
     def __init__(self, master, title: str = "", **kwargs):
@@ -75,25 +101,6 @@ class DropArea(ctk.CTkFrame):
             if f: self.on_files([f])
 
     def _on_drop(self, event):
-        data = event.data
-        if not data: return
-        
-        # Parseo simple de rutas de tkinterdnd2 (maneja {} para rutas con espacios)
-        paths, curr, in_brace = [], "", False
-        for ch in data:
-            if ch == "{":
-                in_brace, curr = True, ""
-            elif ch == "}":
-                in_brace = False
-                if curr: paths.append(curr); curr = ""
-            elif ch == " " and not in_brace:
-                if curr: paths.append(curr); curr = ""
-            else:
-                curr += ch
-        if curr: paths.append(curr)
-
-        if not self.multiple and paths:
-            paths = [paths[0]]
-            
+        paths = parse_dnd_files(event.data, self.multiple)
         if paths:
             self.on_files(paths)

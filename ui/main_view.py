@@ -4,8 +4,9 @@ import os
 import subprocess
 import tkinter as tk
 import customtkinter as ctk
-from tkinter import messagebox
-from ui.widgets import GlassCard, DropArea, SUPPORTS_DND
+from tkinter import filedialog, messagebox
+from PIL import Image, ImageOps
+from ui.widgets import GlassCard, DropArea, SUPPORTS_DND, DND_FILES, parse_dnd_files
 
 # Intentar importar soporte DnD para la ventana principal
 if SUPPORTS_DND:
@@ -21,6 +22,15 @@ else:
 
 APP_NAME = "PDF Toolbox"
 VERSION = "v2.0"
+IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff")
+IMAGE_PAGE_SIZE_OPTIONS = {
+    "Tamaño original de imagen": "original",
+    "A4 (297x210 mm)": "A4",
+    "Carta (279x216 mm)": "Carta",
+    "Legal (356x216 mm)": "Legal",
+    "A3 (420x297 mm)": "A3",
+    "A5 (210x148 mm)": "A5",
+}
 
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
@@ -30,8 +40,8 @@ class PDFToolboxApp(BaseClass):
         super().__init__()
         self.controller = controller
         self.title(f"{APP_NAME} {VERSION}")
-        self.geometry("1100x800")
-        self.minsize(900, 650)
+        self.geometry("1280x820")
+        self.minsize(1100, 700)
 
         # Configurar grid principal
         self.grid_columnconfigure(1, weight=1)
@@ -95,7 +105,7 @@ class PDFToolboxApp(BaseClass):
     def _build_sidebar(self):
         self.sidebar = ctk.CTkFrame(self, width=200, corner_radius=0)
         self.sidebar.grid(row=0, column=0, sticky="nsew")
-        self.sidebar.grid_rowconfigure(8, weight=1) # Spacer
+        self.sidebar.grid_rowconfigure(10, weight=1) # Spacer
 
         lbl = ctk.CTkLabel(self.sidebar, text=APP_NAME, font=ctk.CTkFont(size=20, weight="bold"))
         lbl.grid(row=0, column=0, padx=20, pady=(20, 10))
@@ -105,8 +115,10 @@ class PDFToolboxApp(BaseClass):
         btn_config = [
             ("Unir PDF", "MERGE"),
             ("Dividir PDF", "SPLIT"),
+            ("Ordenar hojas", "ORGANIZE"),
             ("Comprimir", "COMPRESS"),
             ("Convertir", "CONVERT"),
+            ("Imagen a PDF", "IMAGE_TO_PDF"),
             ("Rotar PDF", "ROTATE"),
             ("Seguridad", "PASSWORD"),
             ("Metadatos", "METADATA")
@@ -134,11 +146,11 @@ class PDFToolboxApp(BaseClass):
             offvalue="Light"
         )
         self.theme_switch.select() # Por defecto Dark
-        self.theme_switch.grid(row=9, column=0, padx=20, pady=20, sticky="s")
+        self.theme_switch.grid(row=11, column=0, padx=20, pady=20, sticky="s")
 
         # Barra de progreso
         self.progress_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
-        self.progress_frame.grid(row=10, column=0, padx=10, pady=(0, 20), sticky="ew")
+        self.progress_frame.grid(row=12, column=0, padx=10, pady=(0, 20), sticky="ew")
         
         self.progress_bar = ctk.CTkProgressBar(self.progress_frame, height=10)
         self.progress_bar.set(0)
@@ -166,6 +178,10 @@ class PDFToolboxApp(BaseClass):
         self.views["SPLIT"] = self._create_view_frame()
         self._build_split_view(self.views["SPLIT"])
 
+        # Organize pages
+        self.views["ORGANIZE"] = self._create_view_frame()
+        self._build_organize_view(self.views["ORGANIZE"])
+
         # Compress
         self.views["COMPRESS"] = self._create_view_frame()
         self._build_compress_view(self.views["COMPRESS"])
@@ -173,6 +189,10 @@ class PDFToolboxApp(BaseClass):
         # Convert
         self.views["CONVERT"] = self._create_view_frame()
         self._build_convert_view(self.views["CONVERT"])
+
+        # Imagen a PDF
+        self.views["IMAGE_TO_PDF"] = self._create_view_frame()
+        self._build_image_to_pdf_view(self.views["IMAGE_TO_PDF"])
 
         # Rotate
         self.views["ROTATE"] = self._create_view_frame()
@@ -368,6 +388,504 @@ class PDFToolboxApp(BaseClass):
         ).pack(anchor="w")
 
 
+    # ---------- ORGANIZE PAGES ----------
+    def _build_organize_view(self, parent):
+        parent.grid_columnconfigure(0, weight=1)
+        parent.grid_columnconfigure(1, weight=0)
+        parent.grid_rowconfigure(0, weight=1)
+
+        self.pdf_page_items = []
+        self.pdf_page_cards = {}
+        self.pdf_page_thumbs = []
+        self.pdf_page_thumb_cache = {}
+        self.pdf_page_drag_index = None
+        self.pdf_page_resize_job = None
+        self.pdf_page_grid_cols = 0
+        self._pdf_pages_last_signature = None
+
+        gallery_shell = ctk.CTkFrame(parent, fg_color="#f7f8fb", corner_radius=0)
+        gallery_shell.grid(row=0, column=0, sticky="nsew")
+        gallery_shell.grid_rowconfigure(1, weight=1)
+        gallery_shell.grid_columnconfigure(0, weight=1)
+
+        topbar = ctk.CTkFrame(gallery_shell, fg_color="#f7f8fb", height=82, corner_radius=0)
+        topbar.grid(row=0, column=0, sticky="ew", padx=16, pady=(12, 0))
+        topbar.grid_columnconfigure(0, weight=1)
+
+        title_block = ctk.CTkFrame(topbar, fg_color="transparent")
+        title_block.grid(row=0, column=0, sticky="w")
+        ctk.CTkLabel(
+            title_block,
+            text="Mesa de páginas",
+            font=ctk.CTkFont(family="Segoe UI", size=22, weight="bold"),
+            text_color="#20232b",
+        ).pack(anchor="w")
+        self.pdf_page_count_lbl = ctk.CTkLabel(
+            title_block,
+            text="Sin páginas cargadas",
+            font=ctk.CTkFont(size=12),
+            text_color="#687183",
+        )
+        self.pdf_page_count_lbl.pack(anchor="w", pady=(2, 0))
+
+        actions = ctk.CTkFrame(topbar, fg_color="transparent")
+        actions.grid(row=0, column=1, sticky="e")
+        ctk.CTkButton(
+            actions,
+            text="Abrir PDF",
+            width=94,
+            height=42,
+            corner_radius=8,
+            fg_color="#ffffff",
+            hover_color="#f0f2f7",
+            text_color="#20232b",
+            border_width=1,
+            border_color="#dfe4ee",
+            command=lambda: self._open_pdf_pages_dialog(replace=True),
+        ).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(
+            actions,
+            text="Añadir PDF",
+            width=102,
+            height=42,
+            corner_radius=8,
+            fg_color="#ffffff",
+            hover_color="#f0f2f7",
+            text_color="#20232b",
+            border_width=1,
+            border_color="#dfe4ee",
+            command=lambda: self._open_pdf_pages_dialog(replace=False),
+        ).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(
+            actions,
+            text="Limpiar",
+            width=76,
+            height=36,
+            corner_radius=8,
+            fg_color="#ffffff",
+            hover_color="#f0f2f7",
+            text_color="#687183",
+            border_width=1,
+            border_color="#dfe4ee",
+            command=self._clear_pdf_pages,
+        ).pack(side="left")
+
+        self.pdf_page_gallery = ctk.CTkScrollableFrame(
+            gallery_shell,
+            fg_color="#f7f8fb",
+            corner_radius=0,
+            scrollbar_button_color="#cfd6e3",
+            scrollbar_button_hover_color="#bcc6d5",
+        )
+        self.pdf_page_gallery.grid(row=1, column=0, sticky="nsew", padx=(0, 8), pady=(4, 0))
+        self.pdf_page_gallery.bind("<Configure>", self._on_pdf_pages_gallery_resize, add="+")
+        self._bind_pdf_page_scroll_tree(gallery_shell)
+        self._bind_pdf_page_scroll_tree(self.pdf_page_gallery)
+
+        self._register_pdf_pages_drop(gallery_shell)
+        self._register_pdf_pages_drop(self.pdf_page_gallery)
+
+        options = ctk.CTkFrame(parent, fg_color="#fbfbfd", corner_radius=0, width=330)
+        options.grid(row=0, column=1, sticky="nsew")
+        options.grid_propagate(False)
+        options.grid_columnconfigure(0, weight=1)
+        options.grid_rowconfigure(7, weight=1)
+        ctk.CTkFrame(parent, fg_color="#e9342f", width=3, corner_radius=0).grid(row=0, column=1, sticky="nsw")
+
+        ctk.CTkLabel(
+            options,
+            text="Orden final",
+            font=ctk.CTkFont(family="Segoe UI", size=24, weight="bold"),
+            text_color="#20232b",
+            anchor="w",
+        ).grid(row=0, column=0, sticky="ew", padx=24, pady=(26, 18))
+
+        ctk.CTkFrame(options, fg_color="#e5e7ed", height=1).grid(row=1, column=0, sticky="ew")
+
+        stats = ctk.CTkFrame(options, fg_color="transparent")
+        stats.grid(row=2, column=0, sticky="ew", padx=24, pady=(24, 8))
+        stats.grid_columnconfigure((0, 1), weight=1, uniform="stats")
+
+        page_stat = ctk.CTkFrame(stats, fg_color="#ffffff", corner_radius=8, border_width=1, border_color="#e5e8ef")
+        page_stat.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        ctk.CTkLabel(page_stat, text="Páginas", font=ctk.CTkFont(size=12), text_color="#687183").pack(pady=(14, 2))
+        self.pdf_pages_total_lbl = ctk.CTkLabel(page_stat, text="0", font=ctk.CTkFont(size=26, weight="bold"), text_color="#20232b")
+        self.pdf_pages_total_lbl.pack(pady=(0, 14))
+
+        source_stat = ctk.CTkFrame(stats, fg_color="#ffffff", corner_radius=8, border_width=1, border_color="#e5e8ef")
+        source_stat.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+        ctk.CTkLabel(source_stat, text="PDFs", font=ctk.CTkFont(size=12), text_color="#687183").pack(pady=(14, 2))
+        self.pdf_pages_sources_lbl = ctk.CTkLabel(source_stat, text="0", font=ctk.CTkFont(size=26, weight="bold"), text_color="#20232b")
+        self.pdf_pages_sources_lbl.pack(pady=(0, 14))
+
+        ctk.CTkLabel(
+            options,
+            text="Herramientas",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color="#303744",
+            anchor="w",
+        ).grid(row=3, column=0, sticky="ew", padx=24, pady=(24, 10))
+
+        ctk.CTkButton(
+            options,
+            text="Restaurar orden original",
+            height=42,
+            corner_radius=8,
+            fg_color="#ffffff",
+            hover_color="#f0f2f7",
+            text_color="#303744",
+            border_width=1,
+            border_color="#dfe4ee",
+            command=self._sort_pdf_pages_original,
+        ).grid(row=4, column=0, sticky="ew", padx=24)
+
+        ctk.CTkLabel(
+            options,
+            text="Salida sin rasterizar",
+            font=ctk.CTkFont(size=12),
+            text_color="#687183",
+            anchor="w",
+        ).grid(row=5, column=0, sticky="ew", padx=24, pady=(18, 0))
+
+        ctk.CTkButton(
+            options,
+            text="Guardar PDF",
+            height=70,
+            corner_radius=9,
+            fg_color="#e9342f",
+            hover_color="#c92d29",
+            font=ctk.CTkFont(size=21, weight="bold"),
+            command=self._run_pdf_page_organizer,
+        ).grid(row=8, column=0, sticky="sew", padx=24, pady=(18, 18))
+
+        self._refresh_pdf_pages_gallery()
+
+    def _bind_pdf_page_scroll_tree(self, widget):
+        try:
+            widget.bind("<MouseWheel>", self._on_pdf_pages_mousewheel)
+            widget.bind("<Button-4>", self._on_pdf_pages_mousewheel)
+            widget.bind("<Button-5>", self._on_pdf_pages_mousewheel)
+        except Exception:
+            pass
+
+        for child in getattr(widget, "winfo_children", lambda: [])():
+            self._bind_pdf_page_scroll_tree(child)
+
+    def _on_pdf_pages_mousewheel(self, event):
+        if getattr(self, "current_view", None) != "ORGANIZE":
+            return
+
+        canvas = getattr(getattr(self, "pdf_page_gallery", None), "_parent_canvas", None)
+        if canvas is None:
+            return
+
+        if getattr(event, "num", None) == 4:
+            units = -3
+        elif getattr(event, "num", None) == 5:
+            units = 3
+        else:
+            delta = getattr(event, "delta", 0)
+            units = int(-delta / 120) if delta else 0
+            if units == 0 and delta:
+                units = -1 if delta > 0 else 1
+
+        if units:
+            canvas.yview_scroll(units, "units")
+        return "break"
+
+    def _register_pdf_pages_drop(self, widget):
+        if not SUPPORTS_DND or DND_FILES is None:
+            return
+        try:
+            widget.drop_target_register(DND_FILES)
+            widget.dnd_bind("<<Drop>>", self._on_pdf_pages_drop)
+        except Exception:
+            pass
+
+    def _on_pdf_pages_drop(self, event):
+        self._add_pdf_page_files(parse_dnd_files(event.data, multiple=True), replace=False)
+
+    def _open_pdf_pages_dialog(self, replace=False):
+        files = filedialog.askopenfilenames(
+            title="Selecciona PDF",
+            filetypes=[
+                ("PDF", "*.pdf"),
+                ("Todos los archivos", "*.*"),
+            ],
+        )
+        if files:
+            self._add_pdf_page_files(list(files), replace=replace)
+
+    def _add_pdf_page_files(self, files, replace=False):
+        valid = [f for f in files if os.path.isfile(f) and f.lower().endswith(".pdf")]
+        if not valid:
+            self.show_error(APP_NAME, "Selecciona PDFs válidos")
+            return
+
+        if replace:
+            self.pdf_page_items.clear()
+            self.pdf_page_thumb_cache.clear()
+
+        added = 0
+        for path in valid:
+            page_count = self.controller.get_pdf_page_count(path)
+            if page_count <= 0:
+                continue
+            for page_index in range(page_count):
+                self.pdf_page_items.append({
+                    "path": path,
+                    "page_index": page_index,
+                    "source_name": os.path.basename(path),
+                })
+                added += 1
+
+        if added == 0:
+            self._refresh_pdf_pages_gallery()
+            return
+
+        if len(valid) != len(files):
+            self.log_message("Se omitieron archivos no compatibles")
+
+        self._pdf_pages_last_signature = None
+        self._refresh_pdf_pages_gallery()
+
+    def _sort_pdf_pages_original(self):
+        self.pdf_page_items.sort(key=lambda item: (item["source_name"].lower(), item["page_index"]))
+        self._pdf_pages_last_signature = None
+        self._refresh_pdf_pages_gallery()
+
+    def _clear_pdf_pages(self):
+        self.pdf_page_items.clear()
+        self._pdf_pages_last_signature = None
+        self._refresh_pdf_pages_gallery()
+
+    def _remove_pdf_page(self, index):
+        if 0 <= index < len(self.pdf_page_items):
+            self.pdf_page_items.pop(index)
+            self._pdf_pages_last_signature = None
+            self._refresh_pdf_pages_gallery()
+
+    def _on_pdf_pages_gallery_resize(self, _event=None):
+        if self.pdf_page_resize_job:
+            self.after_cancel(self.pdf_page_resize_job)
+        self.pdf_page_resize_job = self.after(120, self._refresh_pdf_pages_gallery)
+
+    def _update_pdf_pages_scrollregion(self):
+        canvas = getattr(getattr(self, "pdf_page_gallery", None), "_parent_canvas", None)
+        if canvas is not None:
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+    def _pdf_page_columns(self):
+        width = max(1, self.pdf_page_gallery.winfo_width())
+        return max(2, min(7, width // 168))
+
+    def _pdf_pages_signature(self):
+        return tuple((item["path"], item["page_index"]) for item in self.pdf_page_items)
+
+    def _refresh_pdf_pages_gallery(self):
+        if not hasattr(self, "pdf_page_gallery"):
+            return
+
+        cols = self._pdf_page_columns()
+        signature = self._pdf_pages_signature()
+        if cols == self.pdf_page_grid_cols and signature == self._pdf_pages_last_signature:
+            self._update_pdf_page_count()
+            return
+
+        self.pdf_page_grid_cols = cols
+        self._pdf_pages_last_signature = signature
+        self.pdf_page_cards = {}
+        self.pdf_page_thumbs = []
+
+        for child in self.pdf_page_gallery.winfo_children():
+            child.destroy()
+
+        if not self.pdf_page_items:
+            empty = ctk.CTkFrame(
+                self.pdf_page_gallery,
+                fg_color="#ffffff",
+                corner_radius=8,
+                border_width=1,
+                border_color="#dfe3eb",
+            )
+            empty.grid(row=0, column=0, columnspan=cols, sticky="nsew", padx=24, pady=48, ipady=44)
+            self._register_pdf_pages_drop(empty)
+            ctk.CTkLabel(
+                empty,
+                text="Arrastra PDFs aquí",
+                font=ctk.CTkFont(size=22, weight="bold"),
+                text_color="#202124",
+            ).pack(pady=(10, 6))
+            ctk.CTkLabel(
+                empty,
+                text="Abre un PDF para acomodar, eliminar o añadir páginas antes de guardar.",
+                font=ctk.CTkFont(size=13),
+                text_color="#69707f",
+                wraplength=420,
+            ).pack(pady=(0, 16))
+            ctk.CTkButton(
+                empty,
+                text="Abrir PDF",
+                height=42,
+                corner_radius=8,
+                fg_color="#e9342f",
+                hover_color="#c92d29",
+                command=lambda: self._open_pdf_pages_dialog(replace=True),
+            ).pack()
+            self._bind_pdf_page_scroll_tree(empty)
+            self.after_idle(self._update_pdf_pages_scrollregion)
+            self._update_pdf_page_count()
+            return
+
+        for index, item in enumerate(self.pdf_page_items):
+            row, col = divmod(index, cols)
+            card = self._create_pdf_page_card(self.pdf_page_gallery, item, index)
+            card.grid(row=row, column=col, padx=7, pady=7, sticky="n")
+
+        self.after_idle(self._update_pdf_pages_scrollregion)
+        self._update_pdf_page_count()
+
+    def _create_pdf_page_card(self, parent, item, index):
+        card = ctk.CTkFrame(
+            parent,
+            fg_color="#ffffff",
+            corner_radius=7,
+            border_width=1,
+            border_color="#e5e8ef",
+            width=154,
+            height=238,
+        )
+        card.grid_propagate(False)
+
+        remove_btn = ctk.CTkButton(
+            card,
+            text="x",
+            width=22,
+            height=22,
+            corner_radius=11,
+            fg_color="#2f3540",
+            hover_color="#ef312e",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            command=lambda i=index: self._remove_pdf_page(i),
+        )
+        remove_btn.place(relx=1.0, x=-8, y=8, anchor="ne")
+
+        thumb = self._make_pdf_page_thumb(item)
+        self.pdf_page_thumbs.append(thumb)
+        thumb_label = ctk.CTkLabel(card, image=thumb, text="")
+        thumb_label.pack(pady=(18, 8))
+
+        page_label = ctk.CTkLabel(
+            card,
+            text=f"Página {item['page_index'] + 1}",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color="#303744",
+        )
+        page_label.pack(fill="x", padx=8)
+
+        source_label = ctk.CTkLabel(
+            card,
+            text=self._short_pdf_page_name(item["source_name"]),
+            font=ctk.CTkFont(size=10),
+            text_color="#687183",
+            wraplength=132,
+            justify="left",
+        )
+        source_label.pack(fill="x", padx=8, pady=(2, 0))
+
+        order_badge = ctk.CTkLabel(
+            card,
+            text=str(index + 1),
+            width=26,
+            height=20,
+            corner_radius=10,
+            fg_color="#f0f2f7",
+            text_color="#69707f",
+            font=ctk.CTkFont(size=10, weight="bold"),
+        )
+        order_badge.place(x=8, y=8)
+
+        for widget in (card, thumb_label, page_label, source_label, order_badge):
+            self.pdf_page_cards[widget] = index
+            widget.bind("<ButtonPress-1>", lambda event, i=index: self._on_pdf_page_card_press(i, event))
+            widget.bind("<ButtonRelease-1>", lambda event: self._on_pdf_page_card_release(event))
+
+        self._bind_pdf_page_scroll_tree(card)
+        return card
+
+    def _make_pdf_page_thumb(self, item):
+        key = (item["path"], item["page_index"])
+        if key in self.pdf_page_thumb_cache:
+            return self.pdf_page_thumb_cache[key]
+
+        box_w, box_h = 116, 154
+        canvas = Image.new("RGB", (box_w, box_h), "#f8f8fb")
+        try:
+            page_img = self.controller.render_pdf_page_thumbnail(item["path"], item["page_index"], box_w - 10, box_h - 10)
+            page_img.thumbnail((box_w - 10, box_h - 10), Image.Resampling.LANCZOS)
+            x = (box_w - page_img.width) // 2
+            y = (box_h - page_img.height) // 2
+            canvas.paste(page_img, (x, y))
+        except Exception:
+            pass
+
+        image = ctk.CTkImage(light_image=canvas, dark_image=canvas, size=(box_w, box_h))
+        self.pdf_page_thumb_cache[key] = image
+        return image
+
+    def _short_pdf_page_name(self, name):
+        if len(name) <= 24:
+            return name
+        root, ext = os.path.splitext(name)
+        return f"{root[:19]}...{ext}"
+
+    def _on_pdf_page_card_press(self, index, _event):
+        self.pdf_page_drag_index = index
+
+    def _on_pdf_page_card_release(self, event):
+        source = self.pdf_page_drag_index
+        self.pdf_page_drag_index = None
+        if source is None or source >= len(self.pdf_page_items):
+            return
+
+        target = self._pdf_page_index_at(event.x_root, event.y_root)
+        if target is None or target == source or target >= len(self.pdf_page_items):
+            return
+
+        item = self.pdf_page_items.pop(source)
+        self.pdf_page_items.insert(target, item)
+        self._pdf_pages_last_signature = None
+        self._refresh_pdf_pages_gallery()
+
+    def _pdf_page_index_at(self, x_root, y_root):
+        widget = self.winfo_containing(x_root, y_root)
+        while widget is not None:
+            if widget in self.pdf_page_cards:
+                return self.pdf_page_cards[widget]
+            widget = getattr(widget, "master", None)
+        return None
+
+    def _update_pdf_page_count(self):
+        count = len(getattr(self, "pdf_page_items", []))
+        sources = len({item["path"] for item in getattr(self, "pdf_page_items", [])})
+        if count == 0:
+            text = "Sin páginas cargadas"
+        elif count == 1:
+            text = "1 página lista para guardar"
+        else:
+            text = f"{count} páginas listas para guardar"
+        self.pdf_page_count_lbl.configure(text=text)
+        self.pdf_pages_total_lbl.configure(text=str(count))
+        self.pdf_pages_sources_lbl.configure(text=str(sources))
+
+    def _run_pdf_page_organizer(self):
+        refs = [
+            {"path": item["path"], "page_index": item["page_index"]}
+            for item in self.pdf_page_items
+        ]
+        self.controller.organize_pdf_pages(refs)
+
+
     # ---------- COMPRESS ----------
     def _build_compress_view(self, parent):
         card = GlassCard(parent, "Comprimir PDF")
@@ -425,26 +943,557 @@ class PDFToolboxApp(BaseClass):
 
         # IMG -> PDF
         i2p = tab.tab("Imágenes a PDF")
-        self.i2p_files = []
-        
-        lbl_count = ctk.CTkLabel(i2p, text="0 imágenes seleccionadas")
-        lbl_count.pack(pady=5)
+        i2p.grid_columnconfigure(0, weight=1)
+        i2p.grid_rowconfigure(0, weight=1)
+        shortcut = ctk.CTkFrame(i2p, fg_color="transparent")
+        shortcut.grid(row=0, column=0, sticky="nsew", padx=20, pady=20)
+        shortcut.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            shortcut,
+            text="El convertidor avanzado de imágenes a PDF ahora tiene miniaturas, orden por arrastre y opciones de página.",
+            wraplength=560,
+            justify="center",
+            font=ctk.CTkFont(size=15),
+        ).pack(pady=(90, 18))
+        ctk.CTkButton(
+            shortcut,
+            text="Abrir Imagen a PDF",
+            height=42,
+            command=lambda: self._show_view("IMAGE_TO_PDF"),
+        ).pack()
 
-        def on_drop_imgs(files):
-            valid = [f for f in files if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
-            self.i2p_files.extend(valid)
-            lbl_count.configure(text=f"{len(self.i2p_files)} imágenes seleccionadas")
+    # ---------- IMAGE TO PDF ----------
+    def _build_image_to_pdf_view(self, parent):
+        parent.grid_columnconfigure(0, weight=1)
+        parent.grid_columnconfigure(1, weight=0)
+        parent.grid_rowconfigure(0, weight=1)
 
-        DropArea(i2p, "Arrastra Imágenes", on_drop_imgs, multiple=True).pack(fill="x", pady=10)
-        
-        def clear_imgs():
-            self.i2p_files.clear()
-            lbl_count.configure(text="0 imágenes seleccionadas")
+        self.image_pdf_files = []
+        self.image_pdf_cards = {}
+        self.image_pdf_thumbs = []
+        self.image_pdf_thumb_cache = {}
+        self.image_pdf_drag_index = None
+        self.image_pdf_resize_job = None
+        self.image_pdf_grid_cols = 0
 
-        btn_row = ctk.CTkFrame(i2p, fg_color="transparent")
-        btn_row.pack()
-        ctk.CTkButton(btn_row, text="Crear PDF", command=lambda: self.controller.images_to_pdf(list(self.i2p_files))).pack(side="left", padx=5)
-        ctk.CTkButton(btn_row, text="Limpiar", command=clear_imgs, fg_color="transparent", border_width=1).pack(side="left", padx=5)
+        self.image_pdf_orientation = tk.StringVar(value="portrait")
+        self.image_pdf_page_size = tk.StringVar(value=list(IMAGE_PAGE_SIZE_OPTIONS.keys())[0])
+        self.image_pdf_margin = tk.StringVar(value="none")
+        self.image_pdf_merge = tk.BooleanVar(value=True)
+        self.image_pdf_option_tiles = []
+
+        gallery_shell = ctk.CTkFrame(parent, fg_color="#f7f8fb", corner_radius=0)
+        gallery_shell.grid(row=0, column=0, sticky="nsew")
+        gallery_shell.grid_rowconfigure(1, weight=1)
+        gallery_shell.grid_columnconfigure(0, weight=1)
+
+        topbar = ctk.CTkFrame(gallery_shell, fg_color="#f7f8fb", height=82, corner_radius=0)
+        topbar.grid(row=0, column=0, sticky="ew", padx=16, pady=(12, 0))
+        topbar.grid_columnconfigure(0, weight=1)
+
+        title_block = ctk.CTkFrame(topbar, fg_color="transparent")
+        title_block.grid(row=0, column=0, sticky="w")
+        ctk.CTkLabel(
+            title_block,
+            text="Mesa de imágenes",
+            font=ctk.CTkFont(family="Segoe UI", size=22, weight="bold"),
+            text_color="#20232b",
+        ).pack(anchor="w")
+        self.image_pdf_count_lbl = ctk.CTkLabel(
+            title_block,
+            text="PDF listo para armar",
+            font=ctk.CTkFont(size=12),
+            text_color="#687183",
+        )
+        self.image_pdf_count_lbl.pack(anchor="w", pady=(2, 0))
+
+        actions = ctk.CTkFrame(topbar, fg_color="transparent")
+        actions.grid(row=0, column=1, sticky="e")
+        ctk.CTkButton(
+            actions,
+            text="A-Z",
+            width=46,
+            height=46,
+            corner_radius=23,
+            fg_color="#ffffff",
+            hover_color="#f0f2f7",
+            text_color="#20232b",
+            border_width=1,
+            border_color="#dfe4ee",
+            command=self._sort_image_pdf_files,
+        ).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(
+            actions,
+            text="+",
+            width=52,
+            height=52,
+            corner_radius=26,
+            fg_color="#e9342f",
+            hover_color="#c92d29",
+            font=ctk.CTkFont(size=28, weight="normal"),
+            command=self._open_image_pdf_dialog,
+        ).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(
+            actions,
+            text="Limpiar",
+            width=74,
+            height=36,
+            corner_radius=18,
+            fg_color="#ffffff",
+            hover_color="#f0f2f7",
+            text_color="#687183",
+            border_width=1,
+            border_color="#dfe4ee",
+            command=self._clear_image_pdf_files,
+        ).pack(side="left")
+
+        self.image_pdf_gallery = ctk.CTkScrollableFrame(
+            gallery_shell,
+            fg_color="#f7f8fb",
+            corner_radius=0,
+            scrollbar_button_color="#cfd6e3",
+            scrollbar_button_hover_color="#bcc6d5",
+        )
+        self.image_pdf_gallery.grid(row=1, column=0, sticky="nsew", padx=(0, 8), pady=(4, 0))
+        self.image_pdf_gallery.bind("<Configure>", self._on_image_pdf_gallery_resize, add="+")
+        self._bind_image_pdf_scroll_tree(gallery_shell)
+        self._bind_image_pdf_scroll_tree(self.image_pdf_gallery)
+
+        self._register_image_pdf_drop(gallery_shell)
+        self._register_image_pdf_drop(self.image_pdf_gallery)
+
+        options = ctk.CTkFrame(parent, fg_color="#fbfbfd", corner_radius=0, width=360)
+        options.grid(row=0, column=1, sticky="nsew")
+        options.grid_propagate(False)
+        options.grid_columnconfigure(0, weight=1)
+        options.grid_rowconfigure(10, weight=1)
+        ctk.CTkFrame(parent, fg_color="#e9342f", width=3, corner_radius=0).grid(row=0, column=1, sticky="nsw")
+
+        ctk.CTkLabel(
+            options,
+            text="Ajustes de salida",
+            font=ctk.CTkFont(family="Segoe UI", size=24, weight="bold"),
+            text_color="#20232b",
+            anchor="w",
+        ).grid(row=0, column=0, sticky="ew", padx=24, pady=(26, 18))
+
+        ctk.CTkFrame(options, fg_color="#e5e7ed", height=1).grid(row=1, column=0, sticky="ew")
+
+        ctk.CTkLabel(
+            options,
+            text="Orientación de página",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color="#303744",
+            anchor="w",
+        ).grid(row=2, column=0, sticky="ew", padx=24, pady=(20, 10))
+
+        orientation_row = ctk.CTkFrame(options, fg_color="transparent")
+        orientation_row.grid(row=3, column=0, sticky="ew", padx=24)
+        orientation_row.grid_columnconfigure((0, 1), weight=1, uniform="orientation")
+        self._create_image_pdf_option_tile(orientation_row, "Vertical", "portrait", self.image_pdf_orientation, 0, 0, "▯")
+        self._create_image_pdf_option_tile(orientation_row, "Horizontal", "landscape", self.image_pdf_orientation, 0, 1, "▭")
+
+        ctk.CTkLabel(
+            options,
+            text="Tamaño de página",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color="#303744",
+            anchor="w",
+        ).grid(row=4, column=0, sticky="ew", padx=24, pady=(28, 8))
+
+        ctk.CTkComboBox(
+            options,
+            values=list(IMAGE_PAGE_SIZE_OPTIONS.keys()),
+            variable=self.image_pdf_page_size,
+            height=42,
+            corner_radius=3,
+            border_color="#9ca3af",
+            button_color="#ffffff",
+            button_hover_color="#f3f4f6",
+            fg_color="#ffffff",
+            text_color="#3f4652",
+            dropdown_fg_color="#ffffff",
+            dropdown_text_color="#3f4652",
+        ).grid(row=5, column=0, sticky="ew", padx=24)
+
+        self.image_pdf_size_hint = ctk.CTkLabel(
+            options,
+            text="Original conserva el ancho y alto de cada imagen.",
+            font=ctk.CTkFont(size=11),
+            text_color="#687183",
+            anchor="w",
+        )
+        self.image_pdf_size_hint.grid(row=6, column=0, sticky="ew", padx=24, pady=(6, 0))
+
+        ctk.CTkLabel(
+            options,
+            text="Margen",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color="#303744",
+            anchor="w",
+        ).grid(row=7, column=0, sticky="ew", padx=24, pady=(28, 10))
+
+        margin_row = ctk.CTkFrame(options, fg_color="transparent")
+        margin_row.grid(row=8, column=0, sticky="ew", padx=24)
+        margin_row.grid_columnconfigure((0, 1, 2), weight=1, uniform="margin")
+        self._create_image_pdf_option_tile(margin_row, "Sin\nmargen", "none", self.image_pdf_margin, 0, 0, "▣", height=118)
+        self._create_image_pdf_option_tile(margin_row, "Pequeño", "small", self.image_pdf_margin, 0, 1, "□", height=118)
+        self._create_image_pdf_option_tile(margin_row, "Grande", "large", self.image_pdf_margin, 0, 2, "▢", height=118)
+
+        ctk.CTkCheckBox(
+            options,
+            text="Unir todas las imágenes en un único PDF",
+            variable=self.image_pdf_merge,
+            font=ctk.CTkFont(size=13),
+            text_color="#303744",
+            checkbox_width=24,
+            checkbox_height=24,
+            corner_radius=5,
+            fg_color="#46c986",
+            hover_color="#38b978",
+            border_color="#46c986",
+            checkmark_color="#ffffff",
+        ).grid(row=9, column=0, sticky="w", padx=24, pady=(30, 0))
+
+        ctk.CTkButton(
+            options,
+            text="Crear PDF   >",
+            height=76,
+            corner_radius=9,
+            fg_color="#e9342f",
+            hover_color="#c92d29",
+            font=ctk.CTkFont(size=21, weight="bold"),
+            command=self._run_image_pdf_conversion,
+        ).grid(row=11, column=0, sticky="sew", padx=24, pady=(18, 18))
+
+        self._refresh_image_pdf_option_tiles()
+        self._refresh_image_pdf_gallery()
+
+    def _create_image_pdf_option_tile(self, parent, text, value, variable, row, column, icon_text, height=104):
+        tile = ctk.CTkFrame(parent, fg_color="#f4f4fa", corner_radius=8, border_width=1, border_color="#ececf4", height=height)
+        tile.grid(row=row, column=column, sticky="nsew", padx=4)
+        tile.grid_propagate(False)
+
+        icon = ctk.CTkLabel(tile, text=icon_text, font=ctk.CTkFont(size=32, weight="bold"), text_color="#7d8190")
+        icon.pack(pady=(18, 4))
+        label = ctk.CTkLabel(tile, text=text, font=ctk.CTkFont(size=13), text_color="#7d8190")
+        label.pack()
+
+        def select(_event=None):
+            variable.set(value)
+            self._refresh_image_pdf_option_tiles()
+
+        for widget in (tile, icon, label):
+            widget.bind("<Button-1>", select)
+
+        self.image_pdf_option_tiles.append((tile, icon, label, variable, value))
+
+    def _refresh_image_pdf_option_tiles(self):
+        for tile, icon, label, variable, value in getattr(self, "image_pdf_option_tiles", []):
+            selected = variable.get() == value
+            tile.configure(
+                fg_color="#ffffff" if selected else "#f4f4fa",
+                border_color="#e9342f" if selected else "#ececf4",
+                border_width=2 if selected else 1,
+            )
+            icon.configure(text_color="#e9342f" if selected else "#7d8190")
+            label.configure(text_color="#e9342f" if selected else "#7d8190")
+
+    def _bind_image_pdf_scroll_tree(self, widget):
+        try:
+            widget.bind("<MouseWheel>", self._on_image_pdf_mousewheel)
+            widget.bind("<Button-4>", self._on_image_pdf_mousewheel)
+            widget.bind("<Button-5>", self._on_image_pdf_mousewheel)
+        except Exception:
+            pass
+
+        for child in getattr(widget, "winfo_children", lambda: [])():
+            self._bind_image_pdf_scroll_tree(child)
+
+    def _on_image_pdf_mousewheel(self, event):
+        if getattr(self, "current_view", None) != "IMAGE_TO_PDF":
+            return
+
+        canvas = getattr(getattr(self, "image_pdf_gallery", None), "_parent_canvas", None)
+        if canvas is None:
+            return
+
+        if getattr(event, "num", None) == 4:
+            units = -3
+        elif getattr(event, "num", None) == 5:
+            units = 3
+        else:
+            delta = getattr(event, "delta", 0)
+            units = int(-delta / 120) if delta else 0
+            if units == 0 and delta:
+                units = -1 if delta > 0 else 1
+
+        if units:
+            canvas.yview_scroll(units, "units")
+        return "break"
+
+    def _register_image_pdf_drop(self, widget):
+        if not SUPPORTS_DND or DND_FILES is None:
+            return
+        try:
+            widget.drop_target_register(DND_FILES)
+            widget.dnd_bind("<<Drop>>", self._on_image_pdf_drop)
+        except Exception:
+            pass
+
+    def _on_image_pdf_drop(self, event):
+        self._add_image_pdf_files(parse_dnd_files(event.data, multiple=True))
+
+    def _open_image_pdf_dialog(self):
+        files = filedialog.askopenfilenames(
+            title="Selecciona imágenes",
+            filetypes=[
+                ("Imágenes", "*.png *.jpg *.jpeg *.webp *.bmp *.tif *.tiff"),
+                ("Todos los archivos", "*.*"),
+            ],
+        )
+        if files:
+            self._add_image_pdf_files(list(files))
+
+    def _add_image_pdf_files(self, files):
+        valid = [f for f in files if os.path.isfile(f) and f.lower().endswith(IMAGE_EXTENSIONS)]
+        if not valid:
+            self.show_error(APP_NAME, "Arrastra o selecciona imágenes válidas")
+            return
+        self.image_pdf_files.extend(valid)
+        if len(valid) != len(files):
+            self.log_message("Se omitieron archivos no compatibles")
+        self._refresh_image_pdf_gallery()
+
+    def _sort_image_pdf_files(self):
+        self.image_pdf_files.sort(key=lambda f: os.path.basename(f).lower())
+        self._image_pdf_last_count = None
+        self._refresh_image_pdf_gallery()
+
+    def _clear_image_pdf_files(self):
+        self.image_pdf_files.clear()
+        self._refresh_image_pdf_gallery()
+
+    def _remove_image_pdf_file(self, index):
+        if 0 <= index < len(self.image_pdf_files):
+            self.image_pdf_files.pop(index)
+            self._refresh_image_pdf_gallery()
+
+    def _on_image_pdf_gallery_resize(self, _event=None):
+        if self.image_pdf_resize_job:
+            self.after_cancel(self.image_pdf_resize_job)
+        self.image_pdf_resize_job = self.after(120, self._refresh_image_pdf_gallery)
+
+    def _update_image_pdf_scrollregion(self):
+        canvas = getattr(getattr(self, "image_pdf_gallery", None), "_parent_canvas", None)
+        if canvas is not None:
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+    def _image_pdf_columns(self):
+        width = max(1, self.image_pdf_gallery.winfo_width())
+        return max(2, min(8, width // 160))
+
+    def _refresh_image_pdf_gallery(self):
+        if not hasattr(self, "image_pdf_gallery"):
+            return
+
+        cols = self._image_pdf_columns()
+        if cols == self.image_pdf_grid_cols and getattr(self, "_image_pdf_last_count", None) == len(self.image_pdf_files):
+            self._update_image_pdf_count()
+            return
+
+        self.image_pdf_grid_cols = cols
+        self._image_pdf_last_count = len(self.image_pdf_files)
+        self.image_pdf_cards = {}
+        self.image_pdf_thumbs = []
+
+        for child in self.image_pdf_gallery.winfo_children():
+            child.destroy()
+
+        if not self.image_pdf_files:
+            empty = ctk.CTkFrame(
+                self.image_pdf_gallery,
+                fg_color="#ffffff",
+                corner_radius=8,
+                border_width=1,
+                border_color="#dfe3eb",
+            )
+            empty.grid(row=0, column=0, columnspan=cols, sticky="nsew", padx=24, pady=48, ipady=44)
+            self._register_image_pdf_drop(empty)
+            ctk.CTkLabel(
+                empty,
+                text="Arrastra imágenes aquí",
+                font=ctk.CTkFont(size=22, weight="bold"),
+                text_color="#202124",
+            ).pack(pady=(10, 6))
+            ctk.CTkLabel(
+                empty,
+                text="Puedes soltarlas en cualquier orden y luego arrastrar las miniaturas para reordenarlas.",
+                font=ctk.CTkFont(size=13),
+                text_color="#69707f",
+                wraplength=420,
+            ).pack(pady=(0, 16))
+            ctk.CTkButton(
+                empty,
+                text="Seleccionar imágenes",
+                height=42,
+                corner_radius=21,
+                fg_color="#e9342f",
+                hover_color="#c92d29",
+                command=self._open_image_pdf_dialog,
+            ).pack()
+            self._bind_image_pdf_scroll_tree(empty)
+            self.after_idle(self._update_image_pdf_scrollregion)
+            self._update_image_pdf_count()
+            return
+
+        for index, path in enumerate(self.image_pdf_files):
+            row, col = divmod(index, cols)
+            card = self._create_image_pdf_card(self.image_pdf_gallery, path, index)
+            card.grid(row=row, column=col, padx=7, pady=7, sticky="n")
+
+        self.after_idle(self._update_image_pdf_scrollregion)
+        self._update_image_pdf_count()
+
+    def _create_image_pdf_card(self, parent, path, index):
+        card = ctk.CTkFrame(
+            parent,
+            fg_color="#ffffff",
+            corner_radius=7,
+            border_width=1,
+            border_color="#e5e8ef",
+            width=146,
+            height=214,
+        )
+        card.grid_propagate(False)
+
+        remove_btn = ctk.CTkButton(
+            card,
+            text="x",
+            width=22,
+            height=22,
+            corner_radius=11,
+            fg_color="#2f3540",
+            hover_color="#ef312e",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            command=lambda i=index: self._remove_image_pdf_file(i),
+        )
+        remove_btn.place(relx=1.0, x=-8, y=8, anchor="ne")
+
+        thumb = self._make_image_pdf_thumb(path)
+        self.image_pdf_thumbs.append(thumb)
+        thumb_label = ctk.CTkLabel(card, image=thumb, text="")
+        thumb_label.pack(pady=(18, 8))
+
+        name = self._short_image_pdf_name(os.path.basename(path))
+        name_label = ctk.CTkLabel(
+            card,
+            text=name,
+            font=ctk.CTkFont(size=11),
+            text_color="#4b5563",
+            wraplength=126,
+            justify="left",
+        )
+        name_label.pack(fill="x", padx=8)
+
+        order_badge = ctk.CTkLabel(
+            card,
+            text=str(index + 1),
+            width=26,
+            height=20,
+            corner_radius=10,
+            fg_color="#f0f2f7",
+            text_color="#69707f",
+            font=ctk.CTkFont(size=10, weight="bold"),
+        )
+        order_badge.place(x=8, y=8)
+
+        for widget in (card, thumb_label, name_label, order_badge):
+            self.image_pdf_cards[widget] = index
+            widget.bind("<ButtonPress-1>", lambda event, i=index: self._on_image_pdf_card_press(i, event))
+            widget.bind("<ButtonRelease-1>", lambda event: self._on_image_pdf_card_release(event))
+
+        self._bind_image_pdf_scroll_tree(card)
+        return card
+
+    def _make_image_pdf_thumb(self, path):
+        if path in self.image_pdf_thumb_cache:
+            return self.image_pdf_thumb_cache[path]
+
+        box_w, box_h = 112, 148
+        try:
+            with Image.open(path) as src:
+                img = ImageOps.exif_transpose(src)
+                if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
+                    img = img.convert("RGBA")
+                else:
+                    img = img.convert("RGB")
+                img.thumbnail((box_w, box_h), Image.Resampling.LANCZOS)
+
+                thumb = Image.new("RGB", (box_w, box_h), "#f8f8fb")
+                x = (box_w - img.width) // 2
+                y = (box_h - img.height) // 2
+                if img.mode == "RGBA":
+                    thumb.paste(img, (x, y), img.split()[-1])
+                else:
+                    thumb.paste(img, (x, y))
+        except Exception:
+            thumb = Image.new("RGB", (box_w, box_h), "#f8f8fb")
+
+        image = ctk.CTkImage(light_image=thumb, dark_image=thumb, size=(box_w, box_h))
+        self.image_pdf_thumb_cache[path] = image
+        return image
+
+    def _short_image_pdf_name(self, name):
+        if len(name) <= 23:
+            return name
+        root, ext = os.path.splitext(name)
+        return f"{root[:18]}...{ext}"
+
+    def _on_image_pdf_card_press(self, index, _event):
+        self.image_pdf_drag_index = index
+
+    def _on_image_pdf_card_release(self, event):
+        source = self.image_pdf_drag_index
+        self.image_pdf_drag_index = None
+        if source is None or source >= len(self.image_pdf_files):
+            return
+
+        target = self._image_pdf_index_at(event.x_root, event.y_root)
+        if target is None or target == source or target >= len(self.image_pdf_files):
+            return
+
+        item = self.image_pdf_files.pop(source)
+        self.image_pdf_files.insert(target, item)
+        self._image_pdf_last_count = None
+        self._refresh_image_pdf_gallery()
+
+    def _image_pdf_index_at(self, x_root, y_root):
+        widget = self.winfo_containing(x_root, y_root)
+        while widget is not None:
+            if widget in self.image_pdf_cards:
+                return self.image_pdf_cards[widget]
+            widget = getattr(widget, "master", None)
+        return None
+
+    def _update_image_pdf_count(self):
+        count = len(getattr(self, "image_pdf_files", []))
+        text = "Sin imágenes en la mesa"
+        if count == 1:
+            text = "1 imagen seleccionada"
+        elif count > 1:
+            text = f"{count} imágenes seleccionadas"
+        self.image_pdf_count_lbl.configure(text=text)
+
+    def _run_image_pdf_conversion(self):
+        page_size = IMAGE_PAGE_SIZE_OPTIONS.get(self.image_pdf_page_size.get(), "A4")
+        self.controller.images_to_pdf(
+            list(self.image_pdf_files),
+            page_size=page_size,
+            orientation=self.image_pdf_orientation.get(),
+            margin=self.image_pdf_margin.get(),
+            merge_output=self.image_pdf_merge.get(),
+        )
 
 
     # ---------- ROTATE ----------

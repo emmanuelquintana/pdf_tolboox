@@ -14,11 +14,12 @@ Este proyecto es de uso libre. Puedes usar, modificar y distribuir este código 
 
 - **Fusionar PDFs**: Combina múltiples archivos PDF en uno solo.
 - **Dividir PDF**: Extrae páginas específicas de un PDF en archivos separados.
+- **Ordenar hojas**: Reordena, elimina y añade páginas de uno o varios PDFs sin rasterizar ni reducir nitidez.
 - **Comprimir PDF**: 
   - Modo sin pérdida: Optimiza el PDF manteniendo la calidad original
   - Modo con pérdida: Reduce el tamaño mediante rasterización con DPI ajustable
 - **Convertir PDF a Imágenes**: Extrae las páginas de un PDF como imágenes PNG
-- **Convertir Imágenes a PDF**: Crea un PDF a partir de una colección de imágenes
+- **Convertir Imágenes a PDF**: Crea PDFs desde imágenes con miniaturas ordenables por arrastre, orientación, tamaños estándar u original, márgenes y salida única o separada
 
 ## Requisitos
 
@@ -55,6 +56,7 @@ python app.py
 2. Utiliza la interfaz gráfica para:
    - Seleccionar archivos PDF para fusionar
    - Elegir un PDF para dividir y especificar rangos de páginas
+   - Ordenar hojas de un PDF, eliminar páginas y añadir páginas desde otros PDFs
    - Comprimir PDFs eligiendo el método deseado
    - Convertir PDFs a imágenes o viceversa
 
